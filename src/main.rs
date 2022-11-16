@@ -3,119 +3,156 @@
 //Colin O'Kain & Josh Payne
 //Created and compiled in VSCode on Windows
 
-extern crate rand;
+use std::collections::BinaryHeap;   // For the process heap
+use rand::Rng;                      // For random number generation
+use std::cmp::Ordering;             // Used in Process methods for ordering minheap
+use std::thread;                    // For the individual producer/consumer threads
+use std::time::Duration;            // For the sleep time in threads
+use std::sync::{Arc, Mutex};        // For concurrent control of the process heap
 
-use std::collections::{VecDeque, BinaryHeap};
-use rand::Rng;
-use std::cmp::Ordering;
-
-//main program
-//purpose: Generate a user-defined amount of processes and randomly assign a priority then output all processes based on creation order then priority order
 fn main() {
+    // Generation phases input
+    println!("Enter number of generation phases for the producer:");
+    let mut input  = String::new();
+    std::io::stdin().read_line(&mut input).expect("Could not read input");
+    let num_of_phases : i32 = input.trim().parse().unwrap();
 
-    println!("Welcome to the process node generator. Please enter the number of process nodes to generate:");
+    // Sleep time input
+    println!("Enter sleep time in ms for the producer to pause between generation phases:");
+    input  = String::new();
+    std::io::stdin().read_line(&mut input).expect("Could not read input");
+    let sleep_time : i32 = input.trim().parse().unwrap();
 
-    //Getting user input
-    let mut user_input = String::new();
-    let _result = std::io::stdin().read_line(&mut user_input);
-    user_input = user_input.trim().to_string();
+    // Number of processes input
+    println!("Enter number of processes to generate each phase:");
+    input  = String::new();
+    std::io::stdin().read_line(&mut input).expect("Could not read input");
+    let num_of_processes : i32 = input.trim().parse().unwrap();
 
-    let user_input_int : i32;
-    //Making sure user input is parsable
-    if let Ok(result) = user_input.parse::<i32>() {
-        user_input_int = result;
-    }
-    else {
-        user_input_int = -1;
-    }
+    println!("\nStarting Simulation");
+    
+    // Defining the minheap that stores the individual processes
+    let process_heap : Arc<Mutex<BinaryHeap<Process>>> = Arc::new(Mutex::new(BinaryHeap::new()));
 
-    //Creating the queue and heap
-    let mut queue: VecDeque<Process> = VecDeque::new();
-    let mut min_heap: BinaryHeap<Process> = BinaryHeap::new();
+    // PRODUCER THREAD
+    println!("... producer is starting its work ...");
+    let heap_reference1 = Arc::clone(&process_heap);    // A thread safe reference to the shared process heap
+    let producer = thread::spawn(move || {
+        for phase_number in 0 .. num_of_phases {        // Loop through each phase
+            {   // BEGIN CRITICAL SECTION
+                let mut heap = heap_reference1.lock().unwrap(); // Unlock the heap and get a reference to it
+                for process_number in 1 .. num_of_processes + 1 {   // Loop through each process to generate per phase
+                    let process_id = (phase_number * num_of_processes) + process_number; 
+                    let process = Process::new(process_id, "Process".to_string());  // Generating this iteration's process
+                    heap.push(process); // Pushing the process to the process heap
+                }
+            }   // END CRITICAL SECTION
 
-    //Creating all of the processes, cloning each one, and adding them to the queue and heap
-    for n in 0..user_input_int{
-        let mut rng = rand::thread_rng();
-
-        let process = create_process(n+1, rng.gen_range(0..101), rng.gen_range(100..2000), format!("Process Node {}", n));
-
-        let process2 = process.clone();
-
-        queue.push_back(process);
-        min_heap.push(process2);
-    }
-
-    println!("Verifying. The queue contains {} elements", queue.len());
-    println!("Verifying. The heap contains {} elements\n", min_heap.len());
-
-    println!("Now, draining the Queue, one process at a time ...");
-
-    //Outputting values of processes from queue
-    for _n in 0..queue.len()
-    {
-        if let Some(process)  = queue.pop_front()
-        {
-            println!("Pid: {}, pri: {}, sleep: {}, desc: {}", process.process_id, process.priority, process.sleep_time, process.description);
+            // In between phases, sleep for the specified time
+            println!("\n... producer is sleeping ...\n");
+            thread::sleep(Duration::from_millis(sleep_time as u64));
         }
-    }
 
-    println!(" ");
-    println!("Now, draining the MinHeap, one process at a time ...");
+        // After all phases are complete, print to console that the producer has finished
+        println!("\n... producer has finished: {} nodes were generated ...\n", num_of_phases * num_of_processes);
+    });
 
-    //Outputting values of processes from heap
-    for _n in 0..min_heap.len()
-    {
-        if let Some(process)  = min_heap.pop()
-        {
-            println!("Pid: {}, pri: {}, sleep: {}, desc: {}", process.process_id, process.priority, process.sleep_time, process.description);
+    // CONSUMER 1 THREAD
+    let heap_reference2 = Arc::clone(&process_heap);    // A thread safe reference to the shared process heap
+    let consumer1 = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(10));   // Sleeping for a short period of time before starting so that the producer will have time to generate some processes
+
+        let mut executed_count = 0;     // Counter to keep track of the number of processes this specific consumer has executed
+        let mut process : Process;      // Local reference to a specific process that will be popped from the heap
+        loop {
+            { // BEGIN CRITICAL SECTION
+                let mut heap = heap_reference2.lock().unwrap(); // Unlock the heap and get a reference to it
+
+                if heap.len() == 0 {    // If the heap is empty, the consumer has finished
+                    break;              // Break out of the loop so the thread may close
+                }
+
+                process = heap.pop().unwrap();  // If the heap is not empty, pop the next process from the heap and store it in the local reference
+            } // END CRITICAL SECTION
+
+            thread::sleep(Duration::from_millis(process.sleep_time as u64));    // Simulate executing the process
+            println!("\tConsumer1: executed process {}, pri: {}, for {} ms", process.id, process.priority, process.sleep_time);
+            executed_count += 1;    // Increment the counter of processes executed by this consumer
         }
-    }
+
+        println!("\n...Consumer1 has completed and executed {} processes", executed_count);
+    });
+
+    // CONSUMER 2 THREAD
+    let heap_reference3 = Arc::clone(&process_heap);    // A thread safe reference to the shared process heap
+    let consumer2 = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(10));   // Sleeping for a short period of time before starting so that the producer will have time to generate some processes
+
+        let mut executed_count = 0;     // Counter to keep track of the number of processes this specific consumer has executed
+        let mut process : Process;      // Local reference to a specific process that will be popped from the heap
+        loop {
+            { // BEGIN CRITICAL SECTION
+                let mut heap = heap_reference3.lock().unwrap();     // Unlock the heap and get a reference to it
+
+                if heap.len() == 0 {    // If the heap is empty, the consumer has finished
+                    break;              // Break out of the loop so the thread may close
+                }           
+
+                process = heap.pop().unwrap();  // If the heap is not empty, pop the next process from the heap and store it in the local reference
+            } // END CRITICAL SECTION
+
+            thread::sleep(Duration::from_millis(process.sleep_time as u64));        // Simulate executing the process
+            println!("\t\tConsumer2: executed process {}, pri: {}, for {} ms", process.id, process.priority, process.sleep_time);
+            executed_count += 1  // Increment the counter of processes executed by this consumer
+        }
+
+        println!("\n...Consumer2 has completed and executed {} processes", executed_count);
+    });
+    
+
+
+    // wait for all threads to finish before exiting the main program thread
+    producer.join().unwrap();
+    consumer1.join().unwrap();
+    consumer2.join().unwrap();
+
+    println!("\n\nBoth consumers have completed.");
 }
 
-//Derives the implementation of the Clone method from std
-#[derive(Clone)]
 
-//Process struct definition
-struct Process
-{
-    process_id : i32,
+#[derive(Eq)]           // Deriving basic methods for Process. These methods are used for the minheap ordering
+#[derive(PartialEq)]
+#[derive(Clone)]        // Used to clone Process before pushing into queue/heap
+struct Process {        // Process struct that gets placed in the queue/heap
+    id : i32,
     priority : i32,
     sleep_time : i32,
     description : String
 }
 
-//Creates an instance of a process and returns it
-fn create_process(pid : i32, priority_input : i32, sleep : i32, desc : String) -> Process {
-    let process = Process {
-        process_id : pid,
-        priority : priority_input,
-        sleep_time : sleep,
-        description : desc,
-    };
+impl Process {  // Defining some basic methods for the Process struct
+    pub fn new(process_id : i32, process_description : String) -> Self {    // Constructor for Process
+        let process_priority = rand::thread_rng().gen_range(0..101);        // Making priority a random integer in the range 0 through 100
+        let process_sleep_time = rand::thread_rng().gen_range(100..2001);   // Making sleep time a random integer in the range 100 to 2000
 
-    return process;
-}
-
-//Definitions on how to order the processes for the heap based on the priority
-impl Ord for Process {
-    fn cmp(&self, other: &Process) -> Ordering {
-        self.priority.cmp(&other.priority)
+        Process {   // Building the struct using parameters and the random values above
+            id : process_id,
+            priority : process_priority,
+            sleep_time : process_sleep_time,
+            description : process_description
+        }
     }
 }
 
-impl PartialOrd for Process {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        other.priority.partial_cmp(&self.priority)
+impl Ord for Process {  // Defining the ord method for Process
+    fn cmp(&self, p2: &Self) -> Ordering {
+        self.priority.cmp(&p2.priority)
     }
 }
 
-//Defines how to test equality of two processes (only tests the priority, doesn't give value of actual object equality)
-impl PartialEq for Process {
-    fn eq(&self, other: &Self) -> bool {
-        self.priority == other.priority
+impl PartialOrd for Process {   // Defining the partial ord method for the Process struct. This allows for comparative operators between two Processes
+    fn partial_cmp(&self, p2: &Self) -> Option<Ordering> {
+        p2.priority.partial_cmp(&self.priority)  // Comparing in this order so that heap is sorted as a minheap and not a maxheap
     }
 }
-
-impl Eq for Process { }
-
 
